@@ -340,7 +340,6 @@ class SegmentationModel:
 
                     train_history.append(train_loss)
                     val_history.append(val_loss)
-                    print("val: " + val_loss)
                 
                     # 🔹 Métricas MLflow
                     mlflow.log_metric("train_loss", train_loss, step=epoch)
