@@ -1,7 +1,3 @@
-from utils.sys_env import set_env
-
-set_env()
-
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -18,7 +14,7 @@ class SegmentationModels:
     def __init__(self,
                  segformer_path="./output/segformer_latest/final_model",
                  deeplab_path="./output/deeplab_latest/best_model.pth",
-                 unet_path="./output/unet_latest/model_unet_best.keras",
+                 unet_path="./output/unet_latest/best_model.pth",
                  num_classes=16, num_channels=12):
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -27,4 +23,5 @@ class SegmentationModels:
         self.segformer = SegformerWrapper(segformer_path, self.device)
         self.deeplab = DeeplabWrapper(deeplab_path, self.device,
                                       num_classes=num_classes, num_channels=num_channels)
-        self.unet = UnetWrapper(unet_path)
+        self.unet = UnetWrapper(unet_path, self.device,
+                                num_classes=num_classes, num_channels=num_channels)

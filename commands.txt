@@ -1,4 +1,6 @@
-docker run --gpus all -it --rm -v ${PWD}/output:/app/output -p 8000:8000 ief:latest
+python -m uvicorn pipeline.api.main:app --host "0.0.0.0" --port 8000
+
+docker run --gpus all -it --rm -v ${PWD}/output:/app/output -p 8000:8000 gabriel0murilo/ief:latest
 
 minikube start --driver=docker --addons=registry --mount --mount-string="$PWD:/app"
 
@@ -18,6 +20,8 @@ kubectl get nodes -o=custom-columns=NAME:.metadata.name,GPU:.status.allocatable.
 kubectl describe pod <nome_do_pod>
 kubectl logs <nome_do_pod>
 kubectl get pods -o wide
+kubectl get pods -w
+kubectl describe deployment ief-deployment
 
 
 kubectl delete pods --all
@@ -28,3 +32,10 @@ minikube ssh
 kubectl port-forward service/ief-service 30000:8000
 
 kubectl rollout restart deployment ief-deployment
+
+
+minikube stop
+minikube start
+
+minikube pause
+minikube unpause

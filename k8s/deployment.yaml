@@ -3,6 +3,11 @@ kind: Deployment
 metadata:
   name: ief-deployment
 spec:
+  strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 1
+        maxSurge: 0
   replicas: 1
   selector:
     matchLabels:
@@ -14,6 +19,7 @@ spec:
     spec:
       nodeSelector:
         kubernetes.io/hostname: minikube
+      terminationGracePeriodSeconds: 30
       containers:
       - name: ief
         image: gabriel0murilo/ief:latest

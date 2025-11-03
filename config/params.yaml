@@ -3,8 +3,8 @@ image_dir: "dataset/Augmented/Images"
 mask_dir: "dataset/Augmented/Masks"
 
 num_classes: 16
-batch_size: 4
-num_epochs: 10
+batch_size: 2
+num_epochs: 1
 learning_rate: 0.0001
 img_size: 128
 

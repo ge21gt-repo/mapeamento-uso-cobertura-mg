@@ -1,7 +1,3 @@
-from utils.sys_env import set_env
-
-set_env()
-
 import os
 from src.train.evaluate import eval
 import torch
@@ -12,16 +8,13 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
 from torchvision import models
 from transformers import SegformerForSemanticSegmentation, SegformerFeatureExtractor, Trainer, TrainingArguments
-from utils.metrics import eval_mean_iou, categorical_focal_loss, mean_iou_metric_keras
-from src.data.dataset import RemoteSensingDataset, load_pairs_torch, AugmentationGenerator, get_train_augmentation, load_pairs_tensorflow
+from utils.metrics import eval_mean_iou
+from src.data.dataset import RemoteSensingDataset, load_pairs_torch
 import time
-from keras import layers
-import keras
+import segmentation_models_pytorch as smp
 import os
-import numpy as np
+
 import matplotlib.pyplot as plt
-from keras.callbacks import ModelCheckpoint, EarlyStopping
-from keras.optimizers import Adam
 import warnings
 import mlflow
 from utils.symlink_model import create_symlink
@@ -59,6 +52,7 @@ class SegmentationModel:
             self.model.classifier[4] = nn.Conv2d(256, self.num_classes, kernel_size=1)
             if self.model.aux_classifier is not None:
                 self.model.aux_classifier[4] = nn.Conv2d(256, self.num_classes, kernel_size=1)
+            
             self.model.to(self.device)
 
         elif self.model_type == "segformer":
@@ -78,45 +72,13 @@ class SegmentationModel:
             self.model.to(self.device)
 
         elif self.model_type == "unet":
-            inputs = layers.Input(shape=(self.img_size, self.img_size, 12))
-
-            # Encoder
-            c1 = layers.Conv2D(64, 3, activation='relu', padding='same')(inputs)
-            c1 = layers.Conv2D(64, 3, activation='relu', padding='same')(c1)
-            p1 = layers.MaxPooling2D()(c1)
-
-            c2 = layers.Conv2D(128, 3, activation='relu', padding='same')(p1)
-            c2 = layers.Conv2D(128, 3, activation='relu', padding='same')(c2)
-            p2 = layers.MaxPooling2D()(c2)
-
-            c3 = layers.Conv2D(256, 3, activation='relu', padding='same')(p2)
-            c3 = layers.Conv2D(256, 3, activation='relu', padding='same')(c3)
-            p3 = layers.MaxPooling2D()(c3)
-
-            # Bottleneck
-            c4 = layers.Conv2D(512, 3, activation='relu', padding='same')(p3)
-            c4 = layers.Conv2D(512, 3, activation='relu', padding='same')(c4)
-
-            # Decoder
-            u5 = layers.Conv2DTranspose(256, 2, strides=2, padding='same')(c4)
-            u5 = layers.concatenate([u5, c3])
-            c5 = layers.Conv2D(256, 3, activation='relu', padding='same')(u5)
-            c5 = layers.Conv2D(256, 3, activation='relu', padding='same')(c5)
-
-            u6 = layers.Conv2DTranspose(128, 2, strides=2, padding='same')(c5)
-            u6 = layers.concatenate([u6, c2])
-            c6 = layers.Conv2D(128, 3, activation='relu', padding='same')(u6)
-            c6 = layers.Conv2D(128, 3, activation='relu', padding='same')(c6)
-
-            u7 = layers.Conv2DTranspose(64, 2, strides=2, padding='same')(c6)
-            u7 = layers.concatenate([u7, c1])
-            c7 = layers.Conv2D(64, 3, activation='relu', padding='same')(u7)
-            c7 = layers.Conv2D(64, 3, activation='relu', padding='same')(c7)
-
-            outputs = layers.Conv2D(self.num_classes, 1, activation='softmax', dtype='float32')(c7)
-
-            self.model = keras.models.Model(inputs, outputs)
-
+            self.model = smp.Unet(
+                encoder_name=model_name,        # backbone (há muitos outros)
+                encoder_weights=None,           
+                in_channels=self.num_channels,  
+                classes=self.num_classes        
+            ).to(self.device)
+        
         else:
             raise ValueError("Modelo desconhecido. Use 'segformer', 'deeplab' ou 'unet'.")
 
@@ -125,7 +87,7 @@ class SegmentationModel:
         """
         Carrega automaticamente o último modelo salvo (via symlink *_latest).
         - DeepLab → carrega best_model.pth
-        - UNet → carrega model_unet_best.keras
+        - UNet → carrega best_model.pth
         - SegFormer → carrega pasta final_model/
         """
         latest_dir = os.path.join(self.output_dir, f"{self.model_type}_latest")
@@ -159,14 +121,15 @@ class SegmentationModel:
 
         # ============ UNET ============
         elif self.model_type == "unet":
-            model_path = os.path.join(latest_dir, "model_unet_best.keras")
+            model_path = os.path.join(latest_dir, "best_model.pth")
             if os.path.exists(model_path):
-                print(f"🔁 Carregando pesos UNet de {model_path}")
-                self.create_model()
-                self.model.load_weights(model_path)
-                print("✅ Pesos UNet carregados com sucesso!")
+                print(f"🔁 Carregando pesos Unet de {model_path}")
+                self.create_model(model_name="mit_b0")
+                state_dict = torch.load(model_path, map_location=self.device)
+                self.model.load_state_dict(state_dict, strict=False)
+                print("✅ Pesos Unet carregados com sucesso!")
             else:
-                print("⚠️ Nenhum modelo UNet anterior encontrado. Criando novo modelo.")
+                print("⚠️ Nenhum modelo unet anterior encontrado. Criando novo modelo.")
                 self.create_model()
 
 
@@ -215,11 +178,11 @@ class SegmentationModel:
         train_img, train_mask, val_img, val_mask = load_pairs_torch(self.image_dir, self.mask_dir)
 
         if self.model_type == "segformer":
-            mode = "seg"
+            mode = "multiband"
             feature_extractor = self.feature_extractor
-            self.num_channels = 3
+            self.num_channels = 12
         else:
-            mode = "dlab"
+            mode = "rgb"
             feature_extractor = None
 
         train_dataset = RemoteSensingDataset(train_img, train_mask, feature_extractor, self.num_classes, mode)
@@ -263,7 +226,10 @@ class SegmentationModel:
                     train_loss = self.train_epoch(train_loader, criterion, optimizer)
                     val_loss = self.validate_epoch(val_loader, criterion)
                     scheduler.step(val_loss)
-                
+
+                    train_history.append(train_loss)
+                    val_history.append(val_loss)
+
                     # 🔹 Métricas MLflow
                     mlflow.log_metric("train_loss", train_loss, step=epoch)
                     mlflow.log_metric("val_loss", val_loss, step=epoch)
@@ -282,7 +248,10 @@ class SegmentationModel:
                         mlflow.log_artifact(epoch_model_path)
 
                     print(f"Treino: {train_loss:.4f} | Validação: {val_loss:.4f} | LR: {optimizer.param_groups[0]['lr']:.6f}")
-
+                    
+                    print(train_history)
+                    print(val_history)
+                
                 # Curvas
                 plt.figure(figsize=(10, 5))
                 plt.plot(train_history, label='Treino')
@@ -348,79 +317,73 @@ class SegmentationModel:
                 mlflow.log_metric("Dice Macro", evaluate["dice_macro_mean"])
                 mlflow.log_metric("Mean IOU", evaluate["mean_iou"])
 
+
             elif self.model_type == "unet":
-                X_train, X_test, Y_train, Y_test = load_pairs_tensorflow(
-                    self.image_dir, self.mask_dir, 12, self.num_classes
-                )
+                train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True,
+                                        num_workers=4, pin_memory=True, drop_last=True)
+                val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False,
+                                        num_workers=4, drop_last=False)
+                
+                criterion = nn.CrossEntropyLoss(ignore_index=-1)
+                optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=1e-4)
+                scheduler = ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.5)
 
-                checkpoint_cb = ModelCheckpoint(
-                    filepath=os.path.join(f"./{self.version_dir}/", 'model_unet_best.keras'),
-                    monitor='val_accuracy',
-                    save_best_only=True,
-                    mode='max',
-                    verbose=1
-                )
+                train_history, val_history = [], []
+                best_val_loss = float('inf')
+                start_time = time.time()
 
-                early_stopping_cb = EarlyStopping(
-                    monitor='val_accuracy',
-                    patience=self.patience,
-                    restore_best_weights=True,
-                    mode='max',
-                    verbose=1
-                )
+                for epoch in range(self.num_epochs):
+                    print(f"\nÉpoca {epoch+1}/{self.num_epochs}")
+                    train_loss = self.train_epoch(train_loader, criterion, optimizer)
+                    val_loss = self.validate_epoch(val_loader, criterion)
+                    scheduler.step(val_loss)
 
-                focal_loss_fn = categorical_focal_loss(gamma=2.0, alpha=0.25)
-                optimizer = Adam(learning_rate=self.learning_rate)
-                self.model.compile(optimizer=optimizer, loss=focal_loss_fn,
-                                metrics=['accuracy', mean_iou_metric_keras(num_classes=self.num_classes)])
+                    train_history.append(train_loss)
+                    val_history.append(val_loss)
+                    print("val: " + val_loss)
+                
+                    # 🔹 Métricas MLflow
+                    mlflow.log_metric("train_loss", train_loss, step=epoch)
+                    mlflow.log_metric("val_loss", val_loss, step=epoch)
+                    mlflow.log_metric("lr", optimizer.param_groups[0]['lr'], step=epoch)
 
-                if self.data_augmentation:
-                    augmenter = get_train_augmentation()
-                    train_generator = AugmentationGenerator(X_train, Y_train,
-                                                            batch_size=self.batch_size,
-                                                            augmenter=augmenter,
-                                                            num_classes=self.num_classes)
-                    history = self.model.fit(
-                        train_generator,
-                        epochs=self.num_epochs,
-                        validation_data=(X_test, Y_test),
-                        callbacks=[checkpoint_cb, early_stopping_cb],
-                    )
-                else:
-                    history = self.model.fit(
-                        X_train, Y_train,
-                        epochs=self.num_epochs,
-                        batch_size=self.batch_size,
-                        validation_data=(X_test, Y_test),
-                        callbacks=[checkpoint_cb, early_stopping_cb],
-                    )
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        best_model_path = os.path.join(self.version_dir, "best_model.pth")
+                        torch.save(self.model.state_dict(), best_model_path)
+                        mlflow.log_artifact(best_model_path)
+                        print(f"Melhor modelo salvo! Val_loss: {val_loss:.4f}")
 
-                eval_results = self.model.evaluate(X_test, Y_test)
-                mlflow.log_metrics({
-                    "final_loss": eval_results[0],
-                    "final_accuracy": eval_results[1],
-                    "final_mean_iou": eval_results[2],
-                })
+                    if (epoch + 1) % 10 == 0:
+                        epoch_model_path = os.path.join(self.version_dir, f"model_epoch_{epoch+1}.pth")
+                        torch.save(self.model.state_dict(), epoch_model_path)
+                        mlflow.log_artifact(epoch_model_path)
 
-                # 🔹 Curva de perda
+                    print(f"Treino: {train_loss:.4f} | Validação: {val_loss:.4f} | LR: {optimizer.param_groups[0]['lr']:.6f}")
+
+                # Curvas
                 plt.figure(figsize=(10, 5))
-                plt.plot(history.history['loss'], label='Treino')
-                plt.plot(history.history['val_loss'], label='Validação')
-                plt.legend()
-                plt.title('Curva de perda (UNet)')
+                plt.plot(train_history, label='Treino')
+                plt.plot(val_history, label='Validação')
+                plt.title('Perda por Época')
                 plt.xlabel('Época')
-                plt.ylabel('Loss')
-                loss_plot_path = os.path.join(self.version_dir, 'loss_curve_unet.png')
+                plt.ylabel('Perda')
+                plt.legend()
+                loss_plot_path = os.path.join(self.version_dir, 'loss_curve.png')
                 plt.savefig(loss_plot_path)
                 mlflow.log_artifact(loss_plot_path)
 
+                mlflow.log_metric("best_val_loss", best_val_loss)
+                mlflow.log_metric("training_time_min", (time.time() - start_time) / 60)
+                
                 # evaluate
                 evaluate = eval(self.model_type)
                 mlflow.log_metric("Images validates", evaluate["dataset_size"])
                 mlflow.log_metric("Pixel acc", evaluate["pixel_acc_mean"])
                 mlflow.log_metric("Dice Macro", evaluate["dice_macro_mean"])
                 mlflow.log_metric("Mean IOU", evaluate["mean_iou"])
-
+                
+            
             out = f"{self.output_dir}/{self.model_type}_latest"
             create_symlink(self.version_dir, out)
 
@@ -431,7 +394,7 @@ class SegmentationModel:
 
             try:
                 if self.model_type == "unet":
-                    mlflow.keras.log_model(self.model, artifact_path="model", registered_model_name=registered_model_name)
+                    mlflow.pytorch.log_model(self.model, artifact_path="model", registered_model_name=registered_model_name)
                 elif self.model_type == "deeplab":
                     mlflow.pytorch.log_model(self.model, artifact_path="model", registered_model_name=registered_model_name)
                 elif self.model_type == "segformer":
@@ -470,5 +433,5 @@ def unet(use_weights=False, **kwargs):
     if use_weights:
         model.load_latest_weights()
     else:
-        model.create_model()
+        model.create_model(model_name="mit_b0")
     return model

@@ -1,7 +1,4 @@
-from utils.sys_env import set_env
-set_env()
-
-import os, glob, torch, tensorflow as tf, numpy as np
+import os, glob, torch,  numpy as np
 from typing import Dict, Any
 from src.data.loader import Data
 
@@ -9,7 +6,6 @@ from utils.metrics import (
     pixel_accuracy,
     dice_coefficient,
     eval_mean_iou,
-    mean_iou_metric_keras,
 )
 from src.models import SegmentationModels
 
@@ -90,10 +86,8 @@ def eval(
         mean_iou = eval_mean_iou((logits_oh, np.stack(gts)), num_classes)
 
     if model_type == "unet":
-        y_true = np.transpose(one_hot(np.stack(gts), num_classes), (0, 2, 3, 1))
-        y_pred = np.transpose(one_hot(np.stack(preds), num_classes), (0, 2, 3, 1))
-        metric_fn = mean_iou_metric_keras(num_classes)
-        mean_iou = float(metric_fn(tf.convert_to_tensor(y_true), tf.convert_to_tensor(y_pred)).numpy())
+        logits_oh = one_hot(np.stack(preds), num_classes)
+        mean_iou = eval_mean_iou((logits_oh, np.stack(gts)), num_classes)
 
     if model_type == "deeplab":
         logits_oh = one_hot(np.stack(preds), num_classes)
@@ -108,15 +102,14 @@ def eval(
         "mean_iou": mean_iou,
     }
 
-    # -------- Log leve --------
     print(f"\n=== Avaliação {model_type.upper()} ===")
     print(f"Imagens avaliadas: {results['dataset_size']}")
     print(f"Pixel Acc: {results['pixel_acc_mean']:.4f}")
     print(f"Dice Macro: {results['dice_macro_mean']:.4f}")
-    print(f"Mean IOU: {results['mean_iou']:.4f}")
+    print(f"Mean IOU: {results['mean_iou']['mean_iou']:.4f}")
     
 
     return results
 
 if __name__ == "__main__":
-    eval("unet", num_classes=16)
+    eval("segformer", num_classes=16)

@@ -3,7 +3,6 @@ import torch.nn as nn
 from torchvision import models
 from src.data.loader import Data
 from .base import BaseWrapper
-import os
 
 class DeeplabWrapper(BaseWrapper):
     def __init__(self, model_path, device, num_classes=16, num_channels=12):

@@ -7,7 +7,6 @@ from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 import albumentations as A
 import tensorflow as tf
-from keras.utils import to_categorical
 
 
 class RemoteSensingDataset(Dataset):
@@ -19,17 +18,17 @@ class RemoteSensingDataset(Dataset):
         self.mode = mode
 
     def __getitem__(self, idx):
-        if self.mode == "seg":
-            return self.__segitem__(idx)
-        elif self.mode == "dlab":
-            return self.__dlabitem__(idx)
+        if self.mode == "multiband":
+            return self.__multibanditem__(idx)
+        elif self.mode == "rgb":
+            return self.__rgbitem__(idx)
         else:
             raise ValueError(f"Modo inválido: {self.mode}")
 
     def __len__(self):
         return len(self.image_paths)
 
-    def __segitem__(self, idx):
+    def __multibanditem__(self, idx):
         # Carrega imagem (12 bandas)
         img_ds = gdal.Open(self.image_paths[idx])
         img = img_ds.ReadAsArray().astype(np.float32)
@@ -70,7 +69,7 @@ class RemoteSensingDataset(Dataset):
         inputs = {k: v.squeeze(0) for k, v in inputs.items()}
         return inputs
 
-    def __dlabitem__(self, idx):
+    def __rgbitem__(self, idx):
         # Carrega imagem
         img_ds = gdal.Open(self.image_paths[idx])
         img = img_ds.ReadAsArray().astype(np.float32)
@@ -152,56 +151,6 @@ class RemoteSensingDataset(Dataset):
         plt.show()
 
 
-class AugmentationGenerator(tf.keras.utils.Sequence):
-    def __init__(self, images, masks, batch_size, augmenter, num_classes, shuffle=True, **kwargs):
-        super().__init__(**kwargs)
-        self.images = images
-        self.masks = masks
-        self.batch_size = batch_size
-        self.augmenter = augmenter
-        self.num_classes = num_classes
-        self.shuffle = shuffle
-        self.indexes = np.arange(len(images))
-        self.on_epoch_end()
-
-    def __len__(self):
-        return len(self.images) // self.batch_size
-
-    def __getitem__(self, index):
-        batch_indexes = self.indexes[index * self.batch_size:(index + 1) * self.batch_size]
-        batch_imgs = self.images[batch_indexes]
-        batch_masks = self.masks[batch_indexes]
-
-        X_aug = []
-        Y_aug = []
-
-        for img, mask in zip(batch_imgs, batch_masks):
-            transformed = self.augmenter(image=img, mask=np.argmax(mask, axis=-1))  # input mask shape: (H, W)
-            img_aug = transformed['image']
-            mask_aug = to_categorical(transformed['mask'], num_classes=self.num_classes)
-
-            X_aug.append(img_aug)
-            Y_aug.append(mask_aug)
-
-        return np.array(X_aug), np.array(Y_aug)
-
-    def on_epoch_end(self):
-        if self.shuffle:
-            np.random.shuffle(self.indexes)
-
-def get_train_augmentation():
-    return A.Compose([
-        A.HorizontalFlip(p=0.5),
-        A.VerticalFlip(p=0.5),
-        A.RandomRotate90(p=0.5),
-        A.Affine(scale=(0.95, 1.05), translate_percent=(0.05, 0.05), rotate=(-10, 10), shear=0, p=0.5),
-        A.RandomBrightnessContrast(p=0.3),
-        A.GaussNoise(p=0.2),
-        A.ElasticTransform(alpha=1, sigma=50, p=0.3),
-        A.GridDistortion(p=0.3),
-        A.CoarseDropout(num_holes_range=(8, 8), hole_height_range=(8, 8), hole_width_range=(8, 8), fill=0.0, p=0.3),
-    ])
-
 
 def load_pairs_torch(img_dir, mask_dir):
     print("Preparando dados...")
@@ -235,88 +184,3 @@ def load_pairs_torch(img_dir, mask_dir):
     print(f"Total de amostras: {len(image_files)}")
     print(f"Treino: {len(train_img)} | Validação: {len(val_img)}")
     return train_img, train_mask, val_img, val_mask
-
-
-# Unet 12 bands
-def load_pairs_tensorflow(images_dir, labels_dir, num_bands, num_classes):
-    # Garante que comparações não incluam extensão
-    label_files = {
-        os.path.splitext(f)[0]: f
-        for f in os.listdir(labels_dir)
-        if f.lower().endswith(('.tif', '.tiff'))
-    }
-
-    X, Y = [], []
-
-    for img_file in sorted(os.listdir(images_dir)):
-        if not img_file.lower().endswith(('.tif', '.tiff')):
-            continue
-
-        img_name = os.path.splitext(img_file)[0]
-
-        label_name_no_ext = img_name + "_mask"  # remove extensão para comparar
-
-        if label_name_no_ext not in label_files:
-            print(f"[Aviso] Máscara não encontrada para {img_file}")
-            continue
-
-        img_path = os.path.join(images_dir, img_file)
-        lbl_path = os.path.join(labels_dir, label_files[label_name_no_ext])
-
-        try:
-            # --- Carrega imagem ---
-            img_ds = gdal.Open(img_path)
-            if img_ds is None:
-                print(f"[Aviso] Falha ao abrir imagem: {img_file}")
-                continue
-
-            bands = []
-            per_band_min, per_band_max = [], []
-
-            for b in range(min(num_bands, img_ds.RasterCount)):
-                band = img_ds.GetRasterBand(b + 1)
-                stats = band.GetStatistics(0, 1)
-                if stats is None:
-                    raise RuntimeError(f'Sem estatísticas para banda {b+1} de {img_file}')
-                min_val, max_val = stats[0], stats[1]
-                per_band_min.append(min_val)
-                per_band_max.append(max_val)
-                bands.append(band.ReadAsArray())
-
-            img_array = np.stack(bands, axis=-1).astype(np.float32)
-            per_band_min, per_band_max = np.array(per_band_min), np.array(per_band_max)
-            img_array = (img_array - per_band_min[np.newaxis, np.newaxis, :]) / (
-                per_band_max - per_band_min + 1e-6
-            )[np.newaxis, np.newaxis, :]
-            img_array = np.clip(img_array, 0, 1)
-
-            # --- Carrega máscara ---
-            lbl_ds = gdal.Open(lbl_path)
-            if lbl_ds is None:
-                print(f"[Aviso] Falha ao abrir máscara: {lbl_path}")
-                continue
-
-            lbl_array = lbl_ds.GetRasterBand(1).ReadAsArray().astype(np.int32)
-            lbl_array = np.clip(lbl_array, 0, num_classes - 1)
-            lbl_onehot = to_categorical(lbl_array, num_classes=num_classes)
-
-            X.append(img_array)
-            Y.append(lbl_onehot)
-
-        except Exception as e:
-            print(f"[Erro] {img_file}: {e}")
-            continue
-
-    X, Y = np.array(X), np.array(Y)
-
-    if len(X) == 0:
-        raise ValueError(
-            f"Nenhum par imagem/máscara foi encontrado em '{images_dir}' e '{labels_dir}'. "
-            f"Verifique o sufixo _mask'."
-        )
-
-    X_train, X_test, Y_train, Y_test = train_test_split(
-        X, Y, test_size=0.25, random_state=42
-    )
-    print(f"Total de amostras: {len(X)} | Treino: {len(X_train)} | Teste: {len(X_test)}")
-    return X_train, X_test, Y_train, Y_test
