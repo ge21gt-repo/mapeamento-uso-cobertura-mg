@@ -130,7 +130,7 @@ class SegmentationModel:
                 print("✅ Pesos Unet carregados com sucesso!")
             else:
                 print("⚠️ Nenhum modelo unet anterior encontrado. Criando novo modelo.")
-                self.create_model()
+                self.create_model(model_name="mit_b0")
 
 
     def train_epoch(self, loader, criterion, optimizer):

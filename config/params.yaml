@@ -1,10 +1,10 @@
 model_type: "unet"            # "deeplab" ou "segformer" ou "unet"
-image_dir: "dataset/Augmented/Images"
-mask_dir: "dataset/Augmented/Masks"
+image_dir: "/kaggle/input/data-remap/Augmented/Images"
+mask_dir: "/kaggle/input/data-remap/Augmented/Labels_remap"
 
 num_classes: 16
-batch_size: 2
-num_epochs: 1
+batch_size: 8
+num_epochs: 500
 learning_rate: 0.0001
 img_size: 128
 

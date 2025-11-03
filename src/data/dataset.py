@@ -5,8 +5,7 @@ from osgeo import gdal
 from torch.utils.data import Dataset
 from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
-import albumentations as A
-import tensorflow as tf
+
 
 
 class RemoteSensingDataset(Dataset):
